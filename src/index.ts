@@ -1,13 +1,17 @@
 import express from 'express';
-import { readdir, stat, mkdir } from 'fs/promises';
+import { readdir, stat, mkdir, watch } from 'fs/promises';
 import { join, resolve, relative } from 'path';
 import { existsSync, createReadStream } from 'fs';
 import { networkInterfaces } from 'os';
 import QRCode from 'qrcode';
 import archiver from 'archiver';
+import { WebSocketServer, WebSocket } from 'ws';
+import { createServer } from 'http';
 
 const app = express();
 const PORT = 3000;
+const server = createServer(app);
+const wss = new WebSocketServer({ server });
 
 // Resolve directories
 const IMPORTED_DIR = resolve('./data/imported');
@@ -21,6 +25,51 @@ if (!existsSync(EXPORTABLE_DIR))
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// WebSocket connections
+const clients = new Set<WebSocket>();
+
+wss.on('connection', (ws) => {
+	clients.add(ws);
+	console.log('Client connected. Total clients:', clients.size);
+
+	ws.on('close', () => {
+		clients.delete(ws);
+		console.log('Client disconnected. Total clients:', clients.size);
+	});
+
+	ws.on('error', (error) => {
+		console.error('WebSocket error:', error);
+		clients.delete(ws);
+	});
+});
+
+// Broadcast to all connected clients
+function broadcastUpdate(type: string, data?: any) {
+	const message = JSON.stringify({ type, data, timestamp: Date.now() });
+	clients.forEach((client) => {
+		if (client.readyState === WebSocket.OPEN) {
+			client.send(message);
+		}
+	});
+}
+
+// Watch for file system changes
+async function watchDirectory(dir: string, name: string) {
+	try {
+		const watcher = watch(dir, { recursive: true });
+		for await (const event of watcher) {
+			console.log(`File system change in ${name}:`, event);
+			broadcastUpdate('file-change', { directory: name, event });
+		}
+	} catch (error) {
+		console.error(`Error watching ${name}:`, error);
+	}
+}
+
+// Start watching directories
+watchDirectory(IMPORTED_DIR, 'imported');
+watchDirectory(EXPORTABLE_DIR, 'exportable');
 
 // Get local IP addresses
 function getLocalIPs(): string[] {
@@ -370,6 +419,50 @@ app.get('/', async (req, res) => {
     const progressFill = document.getElementById('progressFill');
     const statusMessage = document.getElementById('statusMessage');
 
+    // WebSocket connection for live updates
+    let ws;
+    let reconnectTimeout;
+
+    function connectWebSocket() {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(protocol + '//' + window.location.host);
+
+      ws.onopen = () => {
+        console.log('✅ WebSocket connected - Live updates enabled');
+        clearTimeout(reconnectTimeout);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          console.log('📡 Update received:', message);
+
+          if (message.type === 'file-change') {
+            // Auto-refresh after a short delay to batch multiple changes
+            clearTimeout(window.refreshTimer);
+            window.refreshTimer = setTimeout(() => {
+              console.log('🔄 Refreshing page due to file changes...');
+              window.location.reload();
+            }, 1000);
+          }
+        } catch (error) {
+          console.error('WebSocket message error:', error);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket disconnected. Reconnecting...');
+        reconnectTimeout = setTimeout(connectWebSocket, 3000);
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+    }
+
+    // Connect on page load
+    connectWebSocket();
+
     // Copy to clipboard function
     function copyToClipboard(text) {
       navigator.clipboard.writeText(text).then(() => {
@@ -471,7 +564,7 @@ app.get('/', async (req, res) => {
     function toggleFolder(folderId) {
       const content = document.getElementById(folderId);
       const toggle = document.getElementById('toggle-' + folderId);
-      
+
       if (content && toggle) {
         content.classList.toggle('collapsed');
         toggle.classList.toggle('collapsed');
@@ -542,6 +635,9 @@ app.post('/link-folder', express.json(), async (req, res) => {
 		// Create symlink using Bun
 		await Bun.spawn(['ln', '-s', folderPath, linkPath]).exited;
 
+		// Notify clients of changes
+		broadcastUpdate('folder-linked', { folderName });
+
 		res.json({
 			success: true,
 			message: `Successfully linked folder: ${folderName}`,
@@ -581,6 +677,9 @@ app.post('/upload', async (req, res) => {
 			await Bun.write(filePath, buffer);
 			uploadCount++;
 		}
+
+		// Notify clients of new uploads
+		broadcastUpdate('files-uploaded', { count: uploadCount });
 
 		res.json({ success: true, count: uploadCount });
 	} catch (error) {
@@ -647,11 +746,28 @@ app.use('/download/:directory', async (req, res, next) => {
 
 	try {
 		const directory = req.params.directory as string;
-		// Extract filepath from URL path manually
-		const filepath = req.path.replace('/', '');
+		// Extract filepath from URL - req.originalUrl contains the full URL with encoded characters
+		// Example: /download/exportable/folder/file.txt
+		const urlPrefix = `/download/${directory}/`;
+		let filepath = req.originalUrl;
+
+		if (filepath.startsWith(urlPrefix)) {
+			filepath = filepath.substring(urlPrefix.length);
+		}
+
+		// Decode the filepath
+		filepath = decodeURIComponent(filepath);
+
 		const baseDir =
 			directory === 'imported' ? IMPORTED_DIR : EXPORTABLE_DIR;
-		const fullPath = join(baseDir, decodeURIComponent(filepath));
+		const fullPath = join(baseDir, filepath);
+
+		console.log('Download request:', {
+			directory,
+			filepath,
+			fullPath,
+			exists: existsSync(fullPath),
+		});
 
 		// Security check: ensure path is within allowed directory
 		if (!fullPath.startsWith(baseDir)) {
@@ -659,17 +775,20 @@ app.use('/download/:directory', async (req, res, next) => {
 		}
 
 		if (!existsSync(fullPath)) {
-			return res.status(404).send('File not found');
+			return res.status(404).send(`File not found: ${filepath}`);
 		}
 
 		const file = Bun.file(fullPath);
+		const buffer = Buffer.from(await file.arrayBuffer());
+
 		res.setHeader(
 			'Content-Disposition',
 			`attachment; filename="${filepath.split('/').pop()}"`
 		);
 		res.setHeader('Content-Type', file.type || 'application/octet-stream');
+		res.setHeader('Content-Length', buffer.length.toString());
 
-		return res.send(await file.arrayBuffer());
+		return res.send(buffer);
 	} catch (error) {
 		console.error('Download error:', error);
 		res.status(500).send('Download failed');
@@ -677,7 +796,7 @@ app.use('/download/:directory', async (req, res, next) => {
 });
 
 // Start server
-app.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', () => {
 	const ips = getLocalIPs();
 	console.log('\n🚀 Local WiFi File Share Server Started!\n');
 	console.log('📡 Access from your devices:');
@@ -687,5 +806,6 @@ app.listen(PORT, '0.0.0.0', () => {
 	console.log('\n📁 Sharing directories:');
 	console.log(`   ./data/imported   -> ${IMPORTED_DIR} (uploads)`);
 	console.log(`   ./data/exportable -> ${EXPORTABLE_DIR} (downloads)`);
+	console.log('\n🔌 WebSocket server running for live updates');
 	console.log('\n✨ Ready to share files!\n');
 });
