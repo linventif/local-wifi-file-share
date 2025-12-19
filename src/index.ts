@@ -160,6 +160,7 @@ function buildFolderTree(
 		// Navigate/create folder structure
 		for (let i = 0; i < pathParts.length - 1; i++) {
 			const folderName = pathParts[i];
+			if (!folderName) continue; // Skip empty folder names
 			const folderPath = pathParts.slice(0, i + 1).join('/');
 
 			if (!currentNode.subfolders.has(folderName)) {
@@ -374,11 +375,94 @@ app.get('/', async (req, res) => {
     .status-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
     .status-error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
     .empty-state { text-align: center; padding: 40px; color: #999; }
+
+    /* Speedtest Styles */
+    .speedtest-section { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 25px; border-radius: 12px; margin-bottom: 30px; color: white; }
+    .speedtest-section h2 { color: white; margin-bottom: 15px; }
+    .speedtest-controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+    .speedtest-results { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+    .speedtest-card { background: rgba(255,255,255,0.15); backdrop-filter: blur(10px); padding: 20px; border-radius: 8px; text-align: center; }
+    .speedtest-label { font-size: 14px; opacity: 0.9; margin-bottom: 8px; }
+    .speedtest-value { font-size: 32px; font-weight: bold; margin-bottom: 5px; }
+    .speedtest-unit { font-size: 16px; opacity: 0.8; }
+    .btn-speedtest { background: rgba(255,255,255,0.2); color: white; border: 2px solid rgba(255,255,255,0.3); padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: 500; transition: all 0.3s; }
+    .btn-speedtest:hover { background: rgba(255,255,255,0.3); border-color: rgba(255,255,255,0.5); }
+    .btn-speedtest:disabled { opacity: 0.5; cursor: not-allowed; }
+    .speedtest-progress { height: 6px; background: rgba(255,255,255,0.2); border-radius: 3px; overflow: hidden; margin-top: 15px; }
+    .speedtest-progress-bar { height: 100%; background: white; transition: width 0.3s; }
+
+    /* Mobile Responsive Styles */
+    @media (max-width: 768px) {
+      body { padding: 10px; }
+      .container { padding: 15px; }
+      h1 { font-size: 24px; }
+      h2 { font-size: 20px; }
+      .qr-grid { grid-template-columns: 1fr; }
+      .qr-item { padding: 12px; }
+      .qr-item img { width: 100%; height: auto; max-width: 200px; }
+      .upload-area { padding: 20px; }
+      .btn { padding: 10px 18px; font-size: 14px; }
+      .btn-secondary { margin-left: 0; margin-top: 10px; }
+      .section-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+      .section-actions { width: 100%; flex-wrap: wrap; }
+      .section-actions button { flex: 1; min-width: 140px; }
+      .folder-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+      .folder-actions { width: 100%; justify-content: flex-start; }
+      .file-item { flex-direction: column; align-items: flex-start; gap: 10px; }
+      .file-actions { width: 100%; }
+      .file-actions button { flex: 1; }
+      .speedtest-controls { flex-direction: column; }
+      .btn-speedtest { width: 100%; }
+      .speedtest-results { grid-template-columns: 1fr; }
+      .speedtest-value { font-size: 28px; }
+    }
+
+    @media (max-width: 480px) {
+      .container { padding: 10px; border-radius: 8px; }
+      h1 { font-size: 20px; }
+      h2 { font-size: 18px; }
+      .upload-area { padding: 15px; }
+      .file-name { font-size: 14px; }
+      .file-meta { font-size: 11px; }
+      .btn-small { padding: 5px 10px; font-size: 13px; }
+      .speedtest-section { padding: 15px; }
+      .speedtest-card { padding: 15px; }
+      .speedtest-value { font-size: 24px; }
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>📁 Local WiFi File Share</h1>
+
+    <div class="speedtest-section">
+      <h2>🚀 Network Speed Test</h2>
+      <div class="speedtest-controls">
+        <button class="btn-speedtest" onclick="runSpeedTest('download')">⬇️ Test Download</button>
+        <button class="btn-speedtest" onclick="runSpeedTest('upload')">⬆️ Test Upload</button>
+        <button class="btn-speedtest" onclick="runSpeedTest('both')">🔄 Test Both</button>
+      </div>
+      <div class="speedtest-results">
+        <div class="speedtest-card">
+          <div class="speedtest-label">Download Speed</div>
+          <div class="speedtest-value" id="downloadSpeed">--</div>
+          <div class="speedtest-unit">Mbps</div>
+        </div>
+        <div class="speedtest-card">
+          <div class="speedtest-label">Upload Speed</div>
+          <div class="speedtest-value" id="uploadSpeed">--</div>
+          <div class="speedtest-unit">Mbps</div>
+        </div>
+        <div class="speedtest-card">
+          <div class="speedtest-label">Latency</div>
+          <div class="speedtest-value" id="latency">--</div>
+          <div class="speedtest-unit">ms</div>
+        </div>
+      </div>
+      <div class="speedtest-progress" id="speedtestProgress" style="display: none;">
+        <div class="speedtest-progress-bar" id="speedtestProgressBar"></div>
+      </div>
+    </div>
 
     <div class="ip-info">
       <strong>📡 Connect from Your Phone - Scan QR Code or Copy URL</strong>
@@ -521,6 +605,112 @@ app.get('/', async (req, res) => {
 
     // Connect on page load
     connectWebSocket();
+
+    // Speedtest functions
+    async function measureLatency() {
+      const start = performance.now();
+      try {
+        await fetch('/speedtest/ping');
+        return Math.round(performance.now() - start);
+      } catch (error) {
+        console.error('Latency test failed:', error);
+        return 0;
+      }
+    }
+
+    async function testDownloadSpeed() {
+      const sizes = [1, 5, 10]; // MB
+      let totalSpeed = 0;
+      let tests = 0;
+
+      for (const size of sizes) {
+        try {
+          const start = performance.now();
+          const response = await fetch('/speedtest/download?size=' + size);
+          const blob = await response.blob();
+          const duration = (performance.now() - start) / 1000; // seconds
+          const speed = (blob.size * 8) / duration / 1000000; // Mbps
+          totalSpeed += speed;
+          tests++;
+        } catch (error) {
+          console.error('Download test ' + size + 'MB failed:', error);
+        }
+      }
+
+      return tests > 0 ? totalSpeed / tests : 0;
+    }
+
+    async function testUploadSpeed() {
+      const sizes = [1, 5, 10]; // MB
+      let totalSpeed = 0;
+      let tests = 0;
+
+      for (const size of sizes) {
+        try {
+          const data = new Uint8Array(size * 1024 * 1024);
+          const blob = new Blob([data]);
+          const formData = new FormData();
+          formData.append('file', blob, 'test.bin');
+
+          const start = performance.now();
+          await fetch('/speedtest/upload', {
+            method: 'POST',
+            body: formData
+          });
+          const duration = (performance.now() - start) / 1000; // seconds
+          const speed = (size * 8) / duration; // Mbps
+          totalSpeed += speed;
+          tests++;
+        } catch (error) {
+          console.error('Upload test ' + size + 'MB failed:', error);
+        }
+      }
+
+      return tests > 0 ? totalSpeed / tests : 0;
+    }
+
+    async function runSpeedTest(type) {
+      const buttons = document.querySelectorAll('.btn-speedtest');
+      buttons.forEach(btn => btn.disabled = true);
+
+      const progress = document.getElementById('speedtestProgress');
+      const progressBar = document.getElementById('speedtestProgressBar');
+      progress.style.display = 'block';
+      progressBar.style.width = '0%';
+
+      try {
+        // Measure latency
+        document.getElementById('latency').textContent = '...';
+        const latency = await measureLatency();
+        document.getElementById('latency').textContent = latency;
+        progressBar.style.width = '20%';
+
+        if (type === 'download' || type === 'both') {
+          document.getElementById('downloadSpeed').textContent = '...';
+          progressBar.style.width = '40%';
+          const downloadSpeed = await testDownloadSpeed();
+          document.getElementById('downloadSpeed').textContent = downloadSpeed.toFixed(2);
+          progressBar.style.width = '60%';
+        }
+
+        if (type === 'upload' || type === 'both') {
+          document.getElementById('uploadSpeed').textContent = '...';
+          progressBar.style.width = '70%';
+          const uploadSpeed = await testUploadSpeed();
+          document.getElementById('uploadSpeed').textContent = uploadSpeed.toFixed(2);
+          progressBar.style.width = '100%';
+        }
+
+        setTimeout(() => {
+          progress.style.display = 'none';
+        }, 1000);
+      } catch (error) {
+        console.error('Speed test failed:', error);
+        alert('Speed test failed: ' + error.message);
+      } finally {
+        buttons.forEach(btn => btn.disabled = false);
+      }
+    }
 
     // Copy to clipboard function
     function copyToClipboard(text) {
@@ -744,6 +934,33 @@ app.post('/upload', async (req, res) => {
 	} catch (error) {
 		console.error('Upload error:', error);
 		res.status(500).send('Upload failed: ' + error);
+	}
+});
+
+// Speedtest endpoints
+app.get('/speedtest/ping', (req, res) => {
+	res.json({ status: 'ok' });
+});
+
+app.get('/speedtest/download', (req, res) => {
+	const size = parseInt(req.query.size as string) || 1; // MB
+	const buffer = Buffer.alloc(size * 1024 * 1024);
+	res.setHeader('Content-Type', 'application/octet-stream');
+	res.setHeader('Content-Length', buffer.length.toString());
+	res.send(buffer);
+});
+
+app.post('/speedtest/upload', async (req, res) => {
+	try {
+		let receivedBytes = 0;
+		req.on('data', (chunk) => {
+			receivedBytes += chunk.length;
+		});
+		req.on('end', () => {
+			res.json({ received: receivedBytes });
+		});
+	} catch (error) {
+		res.status(500).json({ error: 'Upload test failed' });
 	}
 });
 
