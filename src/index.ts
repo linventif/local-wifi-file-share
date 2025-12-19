@@ -123,6 +123,10 @@ app.get('/', async (req, res) => {
 	const importedFiles = await getAllFiles(IMPORTED_DIR, IMPORTED_DIR);
 	const exportableFiles = await getAllFiles(EXPORTABLE_DIR, EXPORTABLE_DIR);
 	const exportableFolders = getFolderStructure(exportableFiles);
+	const totalExportableSize = exportableFiles.reduce(
+		(sum, file) => sum + file.size,
+		0
+	);
 	const localIPs = getLocalIPs();
 
 	// Generate QR codes as data URLs
@@ -171,7 +175,11 @@ app.get('/', async (req, res) => {
     .btn-secondary { background: #2196F3; color: white; margin-left: 10px; }
     .btn-secondary:hover { background: #0b7dda; }
     .section { margin-bottom: 30px; }
-    .section h2 { color: #555; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #eee; }
+    .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #eee; }
+    .section h2 { color: #555; margin: 0; }
+    .section-actions { display: flex; gap: 10px; }
+    .btn-link-folder { background: #9C27B0; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
+    .btn-link-folder:hover { background: #7B1FA2; }
     .folder-group { margin-bottom: 25px; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; }
     .folder-header { background: #f5f5f5; padding: 12px 15px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; }
     .folder-header:hover { background: #ebebeb; }
@@ -240,7 +248,21 @@ app.get('/', async (req, res) => {
     </div>
 
     <div class="section">
-      <h2>📤 Exportable Files (./data/exportable)</h2>
+      <div class="section-header">
+        <h2>📤 Exportable Files (./data/exportable)</h2>
+        <div class="section-actions">
+          <button class="btn-link-folder" onclick="linkFolder()">
+            🔗 Link Folder
+          </button>
+          ${
+				exportableFiles.length > 0
+					? `<button class="btn-download-all" onclick="downloadFolder('.')">
+            📦 Download All (${formatSize(totalExportableSize)})
+          </button>`
+					: ''
+			}
+        </div>
+      </div>
       ${
 			exportableFiles.length > 0
 				? Array.from(exportableFolders.entries())
@@ -455,12 +477,79 @@ app.get('/', async (req, res) => {
         toggle.classList.toggle('collapsed');
       }
     }
+
+    async function linkFolder() {
+      const folderPath = prompt('Enter the absolute path to the folder you want to link:');
+      if (!folderPath) return;
+
+      try {
+        const response = await fetch('/link-folder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folderPath })
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          alert('✅ ' + result.message);
+          window.location.reload();
+        } else {
+          const error = await response.text();
+          alert('❌ Failed to link folder: ' + error);
+        }
+      } catch (error) {
+        alert('❌ Error: ' + error.message);
+      }
+    }
   </script>
 </body>
 </html>
   `;
 
 	res.send(html);
+});
+
+// Link folder endpoint
+app.post('/link-folder', express.json(), async (req, res) => {
+	try {
+		const { folderPath } = req.body;
+
+		if (!folderPath) {
+			return res.status(400).send('Folder path is required');
+		}
+
+		// Check if folder exists
+		if (!existsSync(folderPath)) {
+			return res.status(404).send('Folder does not exist');
+		}
+
+		const folderStat = await stat(folderPath);
+		if (!folderStat.isDirectory()) {
+			return res.status(400).send('Path is not a directory');
+		}
+
+		// Create symlink in exportable directory
+		const folderName = folderPath.split('/').pop() || 'linked_folder';
+		const linkPath = join(EXPORTABLE_DIR, folderName);
+
+		// Check if link already exists
+		if (existsSync(linkPath)) {
+			return res
+				.status(409)
+				.send('A folder with this name already exists');
+		}
+
+		// Create symlink using Bun
+		await Bun.spawn(['ln', '-s', folderPath, linkPath]).exited;
+
+		res.json({
+			success: true,
+			message: `Successfully linked folder: ${folderName}`,
+		});
+	} catch (error) {
+		console.error('Link folder error:', error);
+		res.status(500).send('Failed to link folder: ' + error);
+	}
 });
 
 // Upload endpoint
@@ -504,7 +593,11 @@ app.post('/upload', async (req, res) => {
 app.get('/download-folder/:folderName', async (req, res) => {
 	try {
 		const folderName = decodeURIComponent(req.params.folderName);
-		const folderPath = join(EXPORTABLE_DIR, folderName);
+		// Handle downloading entire exportable directory
+		const folderPath =
+			folderName === '.'
+				? EXPORTABLE_DIR
+				: join(EXPORTABLE_DIR, folderName);
 
 		// Security check
 		if (!folderPath.startsWith(EXPORTABLE_DIR)) {
@@ -516,9 +609,10 @@ app.get('/download-folder/:folderName', async (req, res) => {
 		}
 
 		// Set headers for zip download
+		const zipName = folderName === '.' ? 'exportable' : folderName;
 		res.setHeader(
 			'Content-Disposition',
-			`attachment; filename="${folderName}.zip"`
+			`attachment; filename="${zipName}.zip"`
 		);
 		res.setHeader('Content-Type', 'application/zip');
 
