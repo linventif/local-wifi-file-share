@@ -111,8 +111,15 @@ app.get('/', async (req, res) => {
     h1 { color: #333; margin-bottom: 10px; }
     .ip-info { background: #e3f2fd; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
     .ip-info strong { color: #1976d2; }
-    .ip-list { margin-top: 8px; }
-    .ip-item { padding: 5px 10px; background: white; border-radius: 4px; display: inline-block; margin: 4px; font-family: monospace; }
+    .ip-list { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .ip-item { padding: 8px 12px; background: white; border-radius: 4px; display: flex; align-items: center; gap: 8px; font-family: monospace; }
+    .copy-btn { background: #2196F3; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; transition: all 0.2s; }
+    .copy-btn:hover { background: #0b7dda; }
+    .copy-btn:active { transform: scale(0.95); }
+    .qr-section { margin-top: 15px; padding: 15px; background: white; border-radius: 8px; display: flex; flex-wrap: wrap; gap: 15px; }
+    .qr-item { text-align: center; }
+    .qr-item canvas { border: 2px solid #ddd; border-radius: 8px; }
+    .qr-label { margin-top: 8px; font-size: 12px; color: #666; font-family: monospace; }
     .upload-section { background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 30px; }
     .upload-area { border: 2px dashed #ccc; padding: 40px; text-align: center; border-radius: 8px; cursor: pointer; transition: all 0.3s; }
     .upload-area:hover { border-color: #4CAF50; background: #f1f8f4; }
@@ -149,10 +156,31 @@ app.get('/', async (req, res) => {
       <strong>📡 Server Running On:</strong>
       <div class="ip-list">
         ${localIPs
-			.map((ip) => `<span class="ip-item">http://${ip}:${PORT}</span>`)
+			.map(
+				(ip) => `
+          <span class="ip-item">
+            <span>http://${ip}:${PORT}</span>
+            <button class="copy-btn" onclick="copyToClipboard('http://${ip}:${PORT}')" title="Copy to clipboard">
+              📋 Copy
+            </button>
+          </span>
+        `
+			)
 			.join('')}
       </div>
-      <p style="margin-top: 10px; font-size: 14px; color: #666;">Connect from your phone using any of these addresses</p>
+      <div class="qr-section" id="qrSection">
+        ${localIPs
+			.map(
+				(ip, idx) => `
+          <div class="qr-item">
+            <canvas id="qr${idx}"></canvas>
+            <div class="qr-label">${ip}:${PORT}</div>
+          </div>
+        `
+			)
+			.join('')}
+      </div>
+      <p style="margin-top: 10px; font-size: 14px; color: #666;">Connect from your phone using any of these addresses or scan the QR code</p>
     </div>
 
     <div class="upload-section">
@@ -234,6 +262,7 @@ app.get('/', async (req, res) => {
     </div>
   </div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script>
     const uploadArea = document.getElementById('uploadArea');
     const fileInput = document.getElementById('fileInput');
@@ -241,6 +270,38 @@ app.get('/', async (req, res) => {
     const progressBar = document.getElementById('progressBar');
     const progressFill = document.getElementById('progressFill');
     const statusMessage = document.getElementById('statusMessage');
+
+    // Generate QR codes for each IP
+    ${localIPs
+		.map(
+			(ip, idx) => `
+    new QRCode(document.getElementById('qr${idx}'), {
+      text: 'http://${ip}:${PORT}',
+      width: 128,
+      height: 128,
+      colorDark: '#000000',
+      colorLight: '#ffffff',
+      correctLevel: QRCode.CorrectLevel.M
+    });`
+		)
+		.join('')}
+
+    // Copy to clipboard function
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text).then(() => {
+        // Visual feedback
+        const btn = event.target;
+        const originalText = btn.textContent;
+        btn.textContent = '✓ Copied!';
+        btn.style.background = '#4CAF50';
+        setTimeout(() => {
+          btn.textContent = originalText;
+          btn.style.background = '#2196F3';
+        }, 2000);
+      }).catch(err => {
+        alert('Failed to copy: ' + err);
+      });
+    }
 
     // Drag and drop handlers
     uploadArea.addEventListener('dragover', (e) => {
