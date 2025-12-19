@@ -8,12 +8,13 @@ const app = express();
 const PORT = 3000;
 
 // Resolve directories
-const SRC_DIR = resolve('./src');
-const DATA_DIR = resolve('./data');
+const IMPORTED_DIR = resolve('./data/imported');
+const EXPORTABLE_DIR = resolve('./data/exportable');
 
 // Ensure directories exist
-if (!existsSync(SRC_DIR)) await mkdir(SRC_DIR, { recursive: true });
-if (!existsSync(DATA_DIR)) await mkdir(DATA_DIR, { recursive: true });
+if (!existsSync(IMPORTED_DIR)) await mkdir(IMPORTED_DIR, { recursive: true });
+if (!existsSync(EXPORTABLE_DIR))
+	await mkdir(EXPORTABLE_DIR, { recursive: true });
 
 // Middleware
 app.use(express.json());
@@ -92,8 +93,8 @@ function formatSize(bytes: number): string {
 
 // Serve the main HTML page
 app.get('/', async (req, res) => {
-	const srcFiles = await getAllFiles(SRC_DIR, SRC_DIR);
-	const dataFiles = await getAllFiles(DATA_DIR, DATA_DIR);
+	const importedFiles = await getAllFiles(IMPORTED_DIR, IMPORTED_DIR);
+	const exportableFiles = await getAllFiles(EXPORTABLE_DIR, EXPORTABLE_DIR);
 	const localIPs = getLocalIPs();
 
 	const html = `
@@ -171,12 +172,12 @@ app.get('/', async (req, res) => {
     </div>
 
     <div class="section">
-      <h2>📂 Source Files (./src)</h2>
+      <h2>� Exportable Files (./data/exportable)</h2>
       ${
-			srcFiles.length > 0
+			exportableFiles.length > 0
 				? `
         <ul class="file-list">
-          ${srcFiles
+          ${exportableFiles
 				.map(
 					(file) => `
             <li class="file-item">
@@ -187,7 +188,7 @@ app.get('/', async (req, res) => {
 					).toLocaleString()}</div>
               </div>
               <div class="file-actions">
-                <button class="btn btn-primary btn-small" onclick="downloadFile('src', '${
+                <button class="btn btn-primary btn-small" onclick="downloadFile('exportable', '${
 					file.path
 				}')">Download</button>
               </div>
@@ -197,17 +198,17 @@ app.get('/', async (req, res) => {
 				.join('')}
         </ul>
       `
-				: '<div class="empty-state">No files in ./src directory</div>'
+				: '<div class="empty-state">No files in ./data/exportable directory</div>'
 		}
     </div>
 
     <div class="section">
-      <h2>💾 Data Files (./data)</h2>
+      <h2>� Imported Files (./data/imported)</h2>
       ${
-			dataFiles.length > 0
+			importedFiles.length > 0
 				? `
         <ul class="file-list">
-          ${dataFiles
+          ${importedFiles
 				.map(
 					(file) => `
             <li class="file-item">
@@ -218,7 +219,7 @@ app.get('/', async (req, res) => {
 					).toLocaleString()}</div>
               </div>
               <div class="file-actions">
-                <button class="btn btn-primary btn-small" onclick="downloadFile('data', '${
+                <button class="btn btn-primary btn-small" onclick="downloadFile('imported', '${
 					file.path
 				}')">Download</button>
               </div>
@@ -228,7 +229,7 @@ app.get('/', async (req, res) => {
 				.join('')}
         </ul>
       `
-				: '<div class="empty-state">No files in ./data directory</div>'
+				: '<div class="empty-state">No files in ./data/imported directory</div>'
 		}
     </div>
   </div>
@@ -338,14 +339,14 @@ app.post('/upload', async (req, res) => {
 		for (const file of fileArray) {
 			const buffer = await file.arrayBuffer();
 			const fileName = file.name;
-			const filePath = join(DATA_DIR, fileName);
+			const filePath = join(IMPORTED_DIR, fileName);
 
 			// Create subdirectories if needed
 			const dirPath = join(
-				DATA_DIR,
+				IMPORTED_DIR,
 				fileName.split('/').slice(0, -1).join('/')
 			);
-			if (dirPath !== DATA_DIR) {
+			if (dirPath !== IMPORTED_DIR) {
 				await mkdir(dirPath, { recursive: true });
 			}
 
@@ -371,7 +372,8 @@ app.use('/download/:directory', async (req, res, next) => {
 		const directory = req.params.directory as string;
 		// Extract filepath from URL path manually
 		const filepath = req.path.replace('/', '');
-		const baseDir = directory === 'src' ? SRC_DIR : DATA_DIR;
+		const baseDir =
+			directory === 'imported' ? IMPORTED_DIR : EXPORTABLE_DIR;
 		const fullPath = join(baseDir, decodeURIComponent(filepath));
 
 		// Security check: ensure path is within allowed directory
@@ -406,7 +408,7 @@ app.listen(PORT, '0.0.0.0', () => {
 		console.log(`   http://${ip}:${PORT}`);
 	});
 	console.log('\n📁 Sharing directories:');
-	console.log(`   ./src  -> ${SRC_DIR}`);
-	console.log(`   ./data -> ${DATA_DIR}`);
+	console.log(`   ./data/imported   -> ${IMPORTED_DIR} (uploads)`);
+	console.log(`   ./data/exportable -> ${EXPORTABLE_DIR} (downloads)`);
 	console.log('\n✨ Ready to share files!\n');
 });
