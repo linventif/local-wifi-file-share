@@ -3,6 +3,7 @@ import { readdir, stat, mkdir } from 'fs/promises';
 import { join, resolve, relative } from 'path';
 import { existsSync } from 'fs';
 import { networkInterfaces } from 'os';
+import QRCode from 'qrcode';
 
 const app = express();
 const PORT = 3000;
@@ -97,6 +98,20 @@ app.get('/', async (req, res) => {
 	const exportableFiles = await getAllFiles(EXPORTABLE_DIR, EXPORTABLE_DIR);
 	const localIPs = getLocalIPs();
 
+	// Generate QR codes as data URLs
+	const qrCodes = await Promise.all(
+		localIPs.map((ip) =>
+			QRCode.toDataURL(`http://${ip}:${PORT}`, {
+				width: 128,
+				margin: 1,
+				color: {
+					dark: '#000000',
+					light: '#ffffff',
+				},
+			})
+		)
+	);
+
 	const html = `
 <!DOCTYPE html>
 <html lang="en">
@@ -109,17 +124,15 @@ app.get('/', async (req, res) => {
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; background: #f5f5f5; }
     .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
     h1 { color: #333; margin-bottom: 10px; }
-    .ip-info { background: #e3f2fd; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
-    .ip-info strong { color: #1976d2; }
-    .ip-list { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-    .ip-item { padding: 8px 12px; background: white; border-radius: 4px; display: flex; align-items: center; gap: 8px; font-family: monospace; }
-    .copy-btn { background: #2196F3; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; transition: all 0.2s; }
+    .ip-info { background: #e3f2fd; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+    .ip-info strong { color: #1976d2; display: block; margin-bottom: 15px; }
+    .qr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
+    .qr-item { background: white; padding: 15px; border-radius: 8px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .qr-item img { display: block; margin: 0 auto 12px; border: 2px solid #ddd; border-radius: 8px; }
+    .qr-url { font-family: monospace; font-size: 14px; color: #333; margin-bottom: 10px; word-break: break-all; }
+    .copy-btn { background: #2196F3; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px; transition: all 0.2s; width: 100%; }
     .copy-btn:hover { background: #0b7dda; }
-    .copy-btn:active { transform: scale(0.95); }
-    .qr-section { margin-top: 15px; padding: 15px; background: white; border-radius: 8px; display: flex; flex-wrap: wrap; gap: 15px; }
-    .qr-item { text-align: center; }
-    .qr-item canvas { border: 2px solid #ddd; border-radius: 8px; }
-    .qr-label { margin-top: 8px; font-size: 12px; color: #666; font-family: monospace; }
+    .copy-btn:active { transform: scale(0.98); }
     .upload-section { background: #f9f9f9; padding: 20px; border-radius: 8px; margin-bottom: 30px; }
     .upload-area { border: 2px dashed #ccc; padding: 40px; text-align: center; border-radius: 8px; cursor: pointer; transition: all 0.3s; }
     .upload-area:hover { border-color: #4CAF50; background: #f1f8f4; }
@@ -153,34 +166,22 @@ app.get('/', async (req, res) => {
     <h1>📁 Local WiFi File Share</h1>
 
     <div class="ip-info">
-      <strong>📡 Server Running On:</strong>
-      <div class="ip-list">
-        ${localIPs
-			.map(
-				(ip) => `
-          <span class="ip-item">
-            <span>http://${ip}:${PORT}</span>
-            <button class="copy-btn" onclick="copyToClipboard('http://${ip}:${PORT}')" title="Copy to clipboard">
-              📋 Copy
-            </button>
-          </span>
-        `
-			)
-			.join('')}
-      </div>
-      <div class="qr-section" id="qrSection">
+      <strong>📡 Connect from Your Phone - Scan QR Code or Copy URL</strong>
+      <div class="qr-grid">
         ${localIPs
 			.map(
 				(ip, idx) => `
           <div class="qr-item">
-            <canvas id="qr${idx}"></canvas>
-            <div class="qr-label">${ip}:${PORT}</div>
+            <img src="${qrCodes[idx]}" alt="QR Code for ${ip}" width="128" height="128" />
+            <div class="qr-url">http://${ip}:${PORT}</div>
+            <button class="copy-btn" onclick="copyToClipboard('http://${ip}:${PORT}')" title="Copy to clipboard">
+              📋 Copy URL
+            </button>
           </div>
         `
 			)
 			.join('')}
       </div>
-      <p style="margin-top: 10px; font-size: 14px; color: #666;">Connect from your phone using any of these addresses or scan the QR code</p>
     </div>
 
     <div class="upload-section">
@@ -200,7 +201,7 @@ app.get('/', async (req, res) => {
     </div>
 
     <div class="section">
-      <h2>� Exportable Files (./data/exportable)</h2>
+      <h2>📤 Exportable Files (./data/exportable)</h2>
       ${
 			exportableFiles.length > 0
 				? `
@@ -231,7 +232,7 @@ app.get('/', async (req, res) => {
     </div>
 
     <div class="section">
-      <h2>� Imported Files (./data/imported)</h2>
+      <h2>📥 Imported Files (./data/imported)</h2>
       ${
 			importedFiles.length > 0
 				? `
@@ -262,7 +263,6 @@ app.get('/', async (req, res) => {
     </div>
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script>
     const uploadArea = document.getElementById('uploadArea');
     const fileInput = document.getElementById('fileInput');
@@ -270,21 +270,6 @@ app.get('/', async (req, res) => {
     const progressBar = document.getElementById('progressBar');
     const progressFill = document.getElementById('progressFill');
     const statusMessage = document.getElementById('statusMessage');
-
-    // Generate QR codes for each IP
-    ${localIPs
-		.map(
-			(ip, idx) => `
-    new QRCode(document.getElementById('qr${idx}'), {
-      text: 'http://${ip}:${PORT}',
-      width: 128,
-      height: 128,
-      colorDark: '#000000',
-      colorLight: '#ffffff',
-      correctLevel: QRCode.CorrectLevel.M
-    });`
-		)
-		.join('')}
 
     // Copy to clipboard function
     function copyToClipboard(text) {
