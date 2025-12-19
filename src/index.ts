@@ -7,6 +7,7 @@ import QRCode from 'qrcode';
 import archiver from 'archiver';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'http';
+import multer from 'multer';
 
 const app = express();
 const PORT = 3000;
@@ -25,6 +26,28 @@ if (!existsSync(EXPORTABLE_DIR))
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Multer configuration for file uploads
+const upload = multer({
+	storage: multer.diskStorage({
+		destination: async (req, file, cb) => {
+			const relativePath = file.originalname;
+			const dirPath = join(
+				IMPORTED_DIR,
+				relativePath.split('/').slice(0, -1).join('/')
+			);
+			if (dirPath !== IMPORTED_DIR && !existsSync(dirPath)) {
+				await mkdir(dirPath, { recursive: true });
+			}
+			cb(null, dirPath || IMPORTED_DIR);
+		},
+		filename: (req, file, cb) => {
+			const fileName =
+				file.originalname.split('/').pop() || file.originalname;
+			cb(null, fileName);
+		},
+	}),
+});
 
 // WebSocket connections
 const clients = new Set<WebSocket>();
@@ -898,39 +921,18 @@ app.post('/link-folder', express.json(), async (req, res) => {
 });
 
 // Upload endpoint
-app.post('/upload', async (req, res) => {
+app.post('/upload', upload.array('files'), async (req, res) => {
 	try {
-		const files = req.body?.files;
+		const files = req.files as Express.Multer.File[];
 
-		if (!files || (Array.isArray(files) && files.length === 0)) {
+		if (!files || files.length === 0) {
 			return res.status(400).send('No files uploaded');
 		}
 
-		let uploadCount = 0;
-		const fileArray = Array.isArray(files) ? files : [files];
-
-		for (const file of fileArray) {
-			const buffer = await file.arrayBuffer();
-			const fileName = file.name;
-			const filePath = join(IMPORTED_DIR, fileName);
-
-			// Create subdirectories if needed
-			const dirPath = join(
-				IMPORTED_DIR,
-				fileName.split('/').slice(0, -1).join('/')
-			);
-			if (dirPath !== IMPORTED_DIR) {
-				await mkdir(dirPath, { recursive: true });
-			}
-
-			await Bun.write(filePath, buffer);
-			uploadCount++;
-		}
-
 		// Notify clients of new uploads
-		broadcastUpdate('files-uploaded', { count: uploadCount });
+		broadcastUpdate('files-uploaded', { count: files.length });
 
-		res.json({ success: true, count: uploadCount });
+		res.json({ success: true, count: files.length });
 	} catch (error) {
 		console.error('Upload error:', error);
 		res.status(500).send('Upload failed: ' + error);
