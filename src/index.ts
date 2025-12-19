@@ -23,12 +23,16 @@ if (!existsSync(IMPORTED_DIR)) await mkdir(IMPORTED_DIR, { recursive: true });
 if (!existsSync(EXPORTABLE_DIR))
 	await mkdir(EXPORTABLE_DIR, { recursive: true });
 
-// Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Middleware with increased size limits
+app.use(express.json({ limit: '500mb' }));
+app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 
-// Multer configuration for file uploads
+// Multer configuration for file uploads with size limit
 const upload = multer({
+	limits: {
+		fileSize: 500 * 1024 * 1024, // 500MB max file size
+		files: 100, // max 100 files at once
+	},
 	storage: multer.diskStorage({
 		destination: async (req, file, cb) => {
 			const relativePath = file.originalname;
@@ -784,7 +788,12 @@ app.get('/', async (req, res) => {
     async function uploadFiles(files) {
       if (files.length === 0) return;
 
+      // Calculate total size
+      const totalSize = Array.from(files).reduce((sum, file) => sum + file.size, 0);
+      const totalSizeMB = (totalSize / (1024 * 1024)).toFixed(2);
+
       progressBar.style.display = 'block';
+      progressFill.style.width = '0%';
       statusMessage.style.display = 'none';
 
       const formData = new FormData();
@@ -792,29 +801,65 @@ app.get('/', async (req, res) => {
         formData.append('files', file, file.webkitRelativePath || file.name);
       });
 
-      try {
-        const response = await fetch('/upload', {
-          method: 'POST',
-          body: formData
-        });
+      // Use XMLHttpRequest for real progress tracking
+      const xhr = new XMLHttpRequest();
 
-        progressFill.style.width = '100%';
-
-        if (response.ok) {
-          const result = await response.json();
-          showStatus('✅ Successfully uploaded ' + result.count + ' file(s)!', 'success');
-          setTimeout(() => window.location.reload(), 1500);
-        } else {
-          showStatus('❌ Upload failed: ' + await response.text(), 'error');
+      // Track upload progress
+      xhr.upload.addEventListener('progress', (e) => {
+        if (e.lengthComputable) {
+          const percentComplete = (e.loaded / e.total) * 100;
+          progressFill.style.width = percentComplete + '%';
+          
+          const uploadedMB = (e.loaded / (1024 * 1024)).toFixed(2);
+          showStatus('⏫ Uploading ' + files.length + ' file(s): ' + uploadedMB + 'MB / ' + totalSizeMB + 'MB (' + percentComplete.toFixed(0) + '%)', 'success');
         }
-      } catch (error) {
-        showStatus('❌ Upload error: ' + error.message, 'error');
-      } finally {
+      });
+
+      // Handle completion
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const result = JSON.parse(xhr.responseText);
+            progressFill.style.width = '100%';
+            showStatus('✅ Successfully uploaded ' + result.count + ' file(s) (' + totalSizeMB + 'MB)!', 'success');
+            setTimeout(() => window.location.reload(), 1500);
+          } catch (e) {
+            showStatus('✅ Upload complete!', 'success');
+            setTimeout(() => window.location.reload(), 1500);
+          }
+        } else {
+          showStatus('❌ Upload failed: ' + xhr.statusText, 'error');
+          setTimeout(() => {
+            progressBar.style.display = 'none';
+            progressFill.style.width = '0%';
+          }, 3000);
+        }
+      });
+
+      // Handle errors
+      xhr.addEventListener('error', () => {
+        showStatus('❌ Network error - Upload failed. Check your connection.', 'error');
         setTimeout(() => {
           progressBar.style.display = 'none';
           progressFill.style.width = '0%';
-        }, 2000);
-      }
+        }, 3000);
+      });
+
+      // Handle timeout
+      xhr.addEventListener('timeout', () => {
+        showStatus('❌ Upload timeout - File too large or connection too slow', 'error');
+        setTimeout(() => {
+          progressBar.style.display = 'none';
+          progressFill.style.width = '0%';
+        }, 3000);
+      });
+
+      // Set timeout to 10 minutes for large files
+      xhr.timeout = 600000;
+
+      // Send the request
+      xhr.open('POST', '/upload');
+      xhr.send(formData);
     }
 
     function showStatus(message, type) {
@@ -926,13 +971,28 @@ app.post('/upload', upload.array('files'), async (req, res) => {
 		const files = req.files as Express.Multer.File[];
 
 		if (!files || files.length === 0) {
+			console.log('No files received in upload request');
 			return res.status(400).send('No files uploaded');
 		}
+
+		// Log upload details
+		const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+		console.log(
+			`✅ Uploaded ${files.length} file(s), total size: ${(
+				totalSize /
+				(1024 * 1024)
+			).toFixed(2)}MB`
+		);
+		files.forEach((f) => {
+			console.log(
+				`  - ${f.originalname}: ${(f.size / 1024).toFixed(2)}KB`
+			);
+		});
 
 		// Notify clients of new uploads
 		broadcastUpdate('files-uploaded', { count: files.length });
 
-		res.json({ success: true, count: files.length });
+		res.json({ success: true, count: files.length, totalSize });
 	} catch (error) {
 		console.error('Upload error:', error);
 		res.status(500).send('Upload failed: ' + error);
