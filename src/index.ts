@@ -1,9 +1,10 @@
 import express from 'express';
 import { readdir, stat, mkdir } from 'fs/promises';
 import { join, resolve, relative } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, createReadStream } from 'fs';
 import { networkInterfaces } from 'os';
 import QRCode from 'qrcode';
+import archiver from 'archiver';
 
 const app = express();
 const PORT = 3000;
@@ -83,6 +84,31 @@ async function getAllFiles(
 	return files;
 }
 
+// Get folder structure from file list
+function getFolderStructure(
+	files: Array<{ path: string; name: string; size: number; modified: Date }>
+): Map<
+	string,
+	Array<{ path: string; name: string; size: number; modified: Date }>
+> {
+	const folders = new Map<
+		string,
+		Array<{ path: string; name: string; size: number; modified: Date }>
+	>();
+
+	for (const file of files) {
+		const pathParts = file.path.split('/');
+		const folder = pathParts.length > 1 ? pathParts[0] : '_root';
+
+		if (!folders.has(folder)) {
+			folders.set(folder, []);
+		}
+		folders.get(folder)!.push(file);
+	}
+
+	return folders;
+}
+
 // Format file size
 function formatSize(bytes: number): string {
 	if (bytes === 0) return '0 B';
@@ -96,6 +122,7 @@ function formatSize(bytes: number): string {
 app.get('/', async (req, res) => {
 	const importedFiles = await getAllFiles(IMPORTED_DIR, IMPORTED_DIR);
 	const exportableFiles = await getAllFiles(EXPORTABLE_DIR, EXPORTABLE_DIR);
+	const exportableFolders = getFolderStructure(exportableFiles);
 	const localIPs = getLocalIPs();
 
 	// Generate QR codes as data URLs
@@ -145,6 +172,18 @@ app.get('/', async (req, res) => {
     .btn-secondary:hover { background: #0b7dda; }
     .section { margin-bottom: 30px; }
     .section h2 { color: #555; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #eee; }
+    .folder-group { margin-bottom: 25px; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; }
+    .folder-header { background: #f5f5f5; padding: 12px 15px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; }
+    .folder-header:hover { background: #ebebeb; }
+    .folder-title-section { display: flex; align-items: center; gap: 10px; flex: 1; }
+    .folder-toggle { font-size: 14px; transition: transform 0.2s; }
+    .folder-toggle.collapsed { transform: rotate(-90deg); }
+    .folder-title { font-weight: 600; color: #333; font-size: 16px; }
+    .folder-actions { display: flex; gap: 8px; align-items: center; }
+    .btn-download-all { background: #FF9800; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
+    .btn-download-all:hover { background: #F57C00; }
+    .folder-content { padding: 15px; background: white; }
+    .folder-content.collapsed { display: none; }
     .file-list { list-style: none; }
     .file-item { padding: 12px; margin-bottom: 8px; background: #fafafa; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; transition: all 0.2s; }
     .file-item:hover { background: #f0f0f0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
@@ -204,29 +243,67 @@ app.get('/', async (req, res) => {
       <h2>📤 Exportable Files (./data/exportable)</h2>
       ${
 			exportableFiles.length > 0
-				? `
-        <ul class="file-list">
-          ${exportableFiles
-				.map(
-					(file) => `
-            <li class="file-item">
-              <div class="file-info">
-                <div class="file-name">📄 ${file.path}</div>
-                <div class="file-meta">${formatSize(file.size)} • ${new Date(
-						file.modified
-					).toLocaleString()}</div>
-              </div>
-              <div class="file-actions">
-                <button class="btn btn-primary btn-small" onclick="downloadFile('exportable', '${
-					file.path
-				}')">Download</button>
-              </div>
-            </li>
+				? Array.from(exportableFolders.entries())
+						.map(([folder, files]) => {
+							const totalSize = files.reduce(
+								(sum, file) => sum + file.size,
+								0
+							);
+							return `
+        <div class="folder-group">
+          ${
+				folder !== '_root'
+					? `
+          <div class="folder-header" onclick="toggleFolder('folder-${folder.replace(
+				/[^a-zA-Z0-9]/g,
+				'_'
+			)}')">
+            <div class="folder-title-section">
+              <span class="folder-toggle" id="toggle-folder-${folder.replace(
+					/[^a-zA-Z0-9]/g,
+					'_'
+				)}">▼</span>
+              <span class="folder-title">📁 ${folder}</span>
+            </div>
+            <div class="folder-actions">
+              <button class="btn-download-all" onclick="event.stopPropagation(); downloadFolder('${folder}')">
+                📦 Download All (${formatSize(totalSize)})
+              </button>
+            </div>
+          </div>
+          <div class="folder-content" id="folder-${folder.replace(
+				/[^a-zA-Z0-9]/g,
+				'_'
+			)}">
           `
-				)
-				.join('')}
-        </ul>
-      `
+					: '<div class="folder-content">'
+			}
+            <ul class="file-list">
+              ${files
+					.map(
+						(file) => `
+                <li class="file-item">
+                  <div class="file-info">
+                    <div class="file-name">📄 ${file.path}</div>
+                    <div class="file-meta">${formatSize(
+						file.size
+					)} • ${new Date(file.modified).toLocaleString()}</div>
+                  </div>
+                  <div class="file-actions">
+                    <button class="btn btn-primary btn-small" onclick="downloadFile('exportable', '${
+						file.path
+					}')">Download</button>
+                  </div>
+                </li>
+              `
+					)
+					.join('')}
+            </ul>
+          </div>
+        </div>
+      `;
+						})
+						.join('')
 				: '<div class="empty-state">No files in ./data/exportable directory</div>'
 		}
     </div>
@@ -360,7 +437,23 @@ app.get('/', async (req, res) => {
     }
 
     function downloadFile(directory, filepath) {
-      window.location.href = '/download/' + directory + '/' + encodeURIComponent(filepath);
+      // Encode each path segment separately to preserve slashes
+      const encodedPath = filepath.split('/').map(segment => encodeURIComponent(segment)).join('/');
+      window.location.href = '/download/' + directory + '/' + encodedPath;
+    }
+
+    function downloadFolder(folderName) {
+      window.location.href = '/download-folder/' + encodeURIComponent(folderName);
+    }
+
+    function toggleFolder(folderId) {
+      const content = document.getElementById(folderId);
+      const toggle = document.getElementById('toggle-' + folderId);
+      
+      if (content && toggle) {
+        content.classList.toggle('collapsed');
+        toggle.classList.toggle('collapsed');
+      }
     }
   </script>
 </body>
@@ -404,6 +497,50 @@ app.post('/upload', async (req, res) => {
 	} catch (error) {
 		console.error('Upload error:', error);
 		res.status(500).send('Upload failed: ' + error);
+	}
+});
+
+// Download folder as zip
+app.get('/download-folder/:folderName', async (req, res) => {
+	try {
+		const folderName = decodeURIComponent(req.params.folderName);
+		const folderPath = join(EXPORTABLE_DIR, folderName);
+
+		// Security check
+		if (!folderPath.startsWith(EXPORTABLE_DIR)) {
+			return res.status(403).send('Access denied');
+		}
+
+		if (!existsSync(folderPath)) {
+			return res.status(404).send('Folder not found');
+		}
+
+		// Set headers for zip download
+		res.setHeader(
+			'Content-Disposition',
+			`attachment; filename="${folderName}.zip"`
+		);
+		res.setHeader('Content-Type', 'application/zip');
+
+		// Create archive
+		const archive = archiver('zip', { zlib: { level: 9 } });
+
+		archive.on('error', (err) => {
+			console.error('Archive error:', err);
+			res.status(500).send('Archive creation failed');
+		});
+
+		// Pipe archive to response
+		archive.pipe(res);
+
+		// Add folder contents to archive
+		archive.directory(folderPath, false);
+
+		// Finalize archive
+		await archive.finalize();
+	} catch (error) {
+		console.error('Folder download error:', error);
+		res.status(500).send('Download failed');
 	}
 });
 
