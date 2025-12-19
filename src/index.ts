@@ -133,29 +133,63 @@ async function getAllFiles(
 	return files;
 }
 
-// Get folder structure from file list
-function getFolderStructure(
+// Build recursive folder tree structure
+interface FolderNode {
+	name: string;
+	path: string;
+	files: Array<{ path: string; name: string; size: number; modified: Date }>;
+	subfolders: Map<string, FolderNode>;
+	totalSize: number;
+}
+
+function buildFolderTree(
 	files: Array<{ path: string; name: string; size: number; modified: Date }>
-): Map<
-	string,
-	Array<{ path: string; name: string; size: number; modified: Date }>
-> {
-	const folders = new Map<
-		string,
-		Array<{ path: string; name: string; size: number; modified: Date }>
-	>();
+): FolderNode {
+	const root: FolderNode = {
+		name: '',
+		path: '',
+		files: [],
+		subfolders: new Map(),
+		totalSize: 0,
+	};
 
 	for (const file of files) {
 		const pathParts = file.path.split('/');
-		const folder = pathParts.length > 1 ? pathParts[0] : '_root';
+		let currentNode = root;
 
-		if (!folders.has(folder)) {
-			folders.set(folder, []);
+		// Navigate/create folder structure
+		for (let i = 0; i < pathParts.length - 1; i++) {
+			const folderName = pathParts[i];
+			const folderPath = pathParts.slice(0, i + 1).join('/');
+
+			if (!currentNode.subfolders.has(folderName)) {
+				currentNode.subfolders.set(folderName, {
+					name: folderName,
+					path: folderPath,
+					files: [],
+					subfolders: new Map(),
+					totalSize: 0,
+				});
+			}
+			currentNode = currentNode.subfolders.get(folderName)!;
 		}
-		folders.get(folder)!.push(file);
+
+		// Add file to current folder
+		currentNode.files.push(file);
 	}
 
-	return folders;
+	// Calculate total sizes recursively
+	function calculateSize(node: FolderNode): number {
+		let size = node.files.reduce((sum, file) => sum + file.size, 0);
+		for (const subfolder of node.subfolders.values()) {
+			size += calculateSize(subfolder);
+		}
+		node.totalSize = size;
+		return size;
+	}
+	calculateSize(root);
+
+	return root;
 }
 
 // Format file size
@@ -167,15 +201,100 @@ function formatSize(bytes: number): string {
 	return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
 }
 
+// Render folder tree recursively
+function renderFolderTree(node: FolderNode, level: number = 0): string {
+	let html = '';
+	const indent = level * 20;
+
+	// Render subfolders first
+	for (const [folderName, subfolder] of node.subfolders.entries()) {
+		const folderId = subfolder.path.replace(/[^a-zA-Z0-9]/g, '_');
+		html += `
+        <div class="folder-group" style="margin-left: ${indent}px;">
+          <div class="folder-header" onclick="toggleFolder('folder-${folderId}')">
+            <div class="folder-title-section">
+              <span class="folder-toggle" id="toggle-folder-${folderId}">▼</span>
+              <span class="folder-title">📁 ${folderName}</span>
+            </div>
+            <div class="folder-actions">
+              <button class="btn-download-all" onclick="event.stopPropagation(); downloadFolder('${
+					subfolder.path
+				}')">
+                📦 Download All (${formatSize(subfolder.totalSize)})
+              </button>
+            </div>
+          </div>
+          <div class="folder-content" id="folder-${folderId}">
+            ${
+				subfolder.files.length > 0
+					? `
+            <ul class="file-list">
+              ${subfolder.files
+					.map(
+						(file) => `
+                <li class="file-item">
+                  <div class="file-info">
+                    <div class="file-name">📄 ${file.name}</div>
+                    <div class="file-meta">${formatSize(
+						file.size
+					)} • ${new Date(file.modified).toLocaleString()}</div>
+                  </div>
+                  <div class="file-actions">
+                    <button class="btn btn-primary btn-small" onclick="downloadFile('exportable', '${
+						file.path
+					}')">Download</button>
+                  </div>
+                </li>
+              `
+					)
+					.join('')}
+            </ul>
+            `
+					: ''
+			}
+            ${renderFolderTree(subfolder, level + 1)}
+          </div>
+        </div>
+      `;
+	}
+
+	// Render root level files (files not in any subfolder)
+	if (level === 0 && node.files.length > 0) {
+		html += `
+        <div class="folder-content">
+          <ul class="file-list">
+            ${node.files
+				.map(
+					(file) => `
+              <li class="file-item">
+                <div class="file-info">
+                  <div class="file-name">📄 ${file.name}</div>
+                  <div class="file-meta">${formatSize(file.size)} • ${new Date(
+						file.modified
+					).toLocaleString()}</div>
+                </div>
+                <div class="file-actions">
+                  <button class="btn btn-primary btn-small" onclick="downloadFile('exportable', '${
+						file.path
+					}')">Download</button>
+                </div>
+              </li>
+            `
+				)
+				.join('')}
+          </ul>
+        </div>
+      `;
+	}
+
+	return html;
+}
+
 // Serve the main HTML page
 app.get('/', async (req, res) => {
 	const importedFiles = await getAllFiles(IMPORTED_DIR, IMPORTED_DIR);
 	const exportableFiles = await getAllFiles(EXPORTABLE_DIR, EXPORTABLE_DIR);
-	const exportableFolders = getFolderStructure(exportableFiles);
-	const totalExportableSize = exportableFiles.reduce(
-		(sum, file) => sum + file.size,
-		0
-	);
+	const exportableTree = buildFolderTree(exportableFiles);
 	const localIPs = getLocalIPs();
 
 	// Generate QR codes as data URLs
@@ -306,7 +425,7 @@ app.get('/', async (req, res) => {
           ${
 				exportableFiles.length > 0
 					? `<button class="btn-download-all" onclick="downloadFolder('.')">
-            📦 Download All (${formatSize(totalExportableSize)})
+            📦 Download All (${formatSize(exportableTree.totalSize)})
           </button>`
 					: ''
 			}
@@ -314,67 +433,7 @@ app.get('/', async (req, res) => {
       </div>
       ${
 			exportableFiles.length > 0
-				? Array.from(exportableFolders.entries())
-						.map(([folder, files]) => {
-							const totalSize = files.reduce(
-								(sum, file) => sum + file.size,
-								0
-							);
-							return `
-        <div class="folder-group">
-          ${
-				folder !== '_root'
-					? `
-          <div class="folder-header" onclick="toggleFolder('folder-${folder.replace(
-				/[^a-zA-Z0-9]/g,
-				'_'
-			)}')">
-            <div class="folder-title-section">
-              <span class="folder-toggle" id="toggle-folder-${folder.replace(
-					/[^a-zA-Z0-9]/g,
-					'_'
-				)}">▼</span>
-              <span class="folder-title">📁 ${folder}</span>
-            </div>
-            <div class="folder-actions">
-              <button class="btn-download-all" onclick="event.stopPropagation(); downloadFolder('${folder}')">
-                📦 Download All (${formatSize(totalSize)})
-              </button>
-            </div>
-          </div>
-          <div class="folder-content" id="folder-${folder.replace(
-				/[^a-zA-Z0-9]/g,
-				'_'
-			)}">
-          `
-					: '<div class="folder-content">'
-			}
-            <ul class="file-list">
-              ${files
-					.map(
-						(file) => `
-                <li class="file-item">
-                  <div class="file-info">
-                    <div class="file-name">📄 ${file.path}</div>
-                    <div class="file-meta">${formatSize(
-						file.size
-					)} • ${new Date(file.modified).toLocaleString()}</div>
-                  </div>
-                  <div class="file-actions">
-                    <button class="btn btn-primary btn-small" onclick="downloadFile('exportable', '${
-						file.path
-					}')">Download</button>
-                  </div>
-                </li>
-              `
-					)
-					.join('')}
-            </ul>
-          </div>
-        </div>
-      `;
-						})
-						.join('')
+				? renderFolderTree(exportableTree)
 				: '<div class="empty-state">No files in ./data/exportable directory</div>'
 		}
     </div>
